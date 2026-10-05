@@ -31,6 +31,8 @@ export const EDITORS = [
   },
   { id: "trae", label: "Trae", commands: ["trae"], launchStyle: "goto" },
   { id: "kiro", label: "Kiro", commands: ["kiro"], baseArgs: ["ide"], launchStyle: "goto" },
+  // Devin Desktop was Windsurf. Installs from before the rename only have `windsurf`.
+  { id: "devin", label: "Devin", commands: ["devin-desktop", "windsurf"], launchStyle: "goto" },
   {
     id: "vscode",
     label: "VS Code",
