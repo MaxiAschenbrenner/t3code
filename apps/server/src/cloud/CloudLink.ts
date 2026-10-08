@@ -4,6 +4,7 @@
  * and mint requests, and keeping the managed tunnel registered, recovered and
  * released. HTTP handlers, server startup and shutdown all go through it.
  */
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createPublicKey.
 import * as NodeCrypto from "node:crypto";
 import {
   AuthStandardClientScopes,
@@ -107,11 +108,6 @@ import {
   shouldRetryRelayRequest,
 } from "./relayResponse.ts";
 import {
-  CLOUD_HEALTH_JTI_PREFIX,
-  CLOUD_HEALTH_NONCE_PREFIX,
-  CLOUD_MINT_JTI_PREFIX,
-  CLOUD_MINT_NONCE_PREFIX,
-  consumeCloudReplayGuards,
   hasBoundedCloudProofLifetime,
   hasExactScope,
   hasForwardedAuthorityHeaders,
@@ -124,6 +120,17 @@ import {
 } from "./linkChecks.ts";
 import { desktopUpdateRestartPending, pendingUpdateHandoffExists } from "./updateHandoff.ts";
 
+const CLOUD_MINT_NONCE_PREFIX = "cloud-mint-nonce-";
+const CLOUD_MINT_JTI_PREFIX = "cloud-mint-jti-";
+const CLOUD_HEALTH_NONCE_PREFIX = "cloud-health-nonce-";
+const CLOUD_HEALTH_JTI_PREFIX = "cloud-health-jti-";
+/** Secret store name prefixes of cloud replay markers. The server prunes expired ones. */
+export const CLOUD_REPLAY_MARKER_PREFIXES = [
+  CLOUD_MINT_NONCE_PREFIX,
+  CLOUD_MINT_JTI_PREFIX,
+  CLOUD_HEALTH_NONCE_PREFIX,
+  CLOUD_HEALTH_JTI_PREFIX,
+] as const;
 const MANAGED_ENDPOINT_PROVISION_REQUEST_TIMEOUT = Duration.minutes(2);
 const RELAY_CONFIG_FIELD_MESSAGES = {
   relayUrl: "Relay URL must be a secure absolute HTTPS URL.",
@@ -323,6 +330,27 @@ function bytesToString(bytes: Uint8Array): string {
 
 function stringToBytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
+}
+
+/** Records each one-shot marker; false when any already existed, so the request is a replay. */
+export function consumeCloudReplayGuards(input: {
+  readonly secrets: ServerSecretStore.ServerSecretStore["Service"];
+  readonly names: ReadonlyArray<string>;
+  readonly value: Uint8Array;
+}) {
+  return Effect.forEach(
+    input.names,
+    (name) =>
+      input.secrets.create(name, input.value).pipe(
+        Effect.as(true),
+        Effect.catchIf(ServerSecretStore.isSecretStoreError, (error) =>
+          ServerSecretStore.isSecretAlreadyExistsError(error)
+            ? Effect.succeed(false)
+            : Effect.fail(error),
+        ),
+      ),
+    { concurrency: input.names.length },
+  ).pipe(Effect.map((created) => created.every(Boolean)));
 }
 
 function validateCloudMintPublicKey(
@@ -654,7 +682,7 @@ const make = Effect.gen(function* () {
       return proof satisfies RelayEnvironmentLinkProof;
     },
     Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("generate-link-proof")),
-    Effect.catchTag("PlatformError", internalError("generate-link-proof")),
+    Effect.catchTags({ PlatformError: internalError("generate-link-proof") }),
   );
 
   const activateManagedTunnel = Effect.fn("environment.cloud.activateManagedTunnel")(
@@ -1519,7 +1547,7 @@ const make = Effect.gen(function* () {
       } satisfies RelayEnvironmentHealthResponse;
     },
     Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("answer-health")),
-    Effect.catchTag("PlatformError", internalError("answer-health")),
+    Effect.catchTags({ PlatformError: internalError("answer-health") }),
   );
 
   const mintCredential = Effect.fn("environment.cloud.mintCredential")(
@@ -1626,7 +1654,7 @@ const make = Effect.gen(function* () {
       } satisfies RelayEnvironmentMintResponse;
     },
     Effect.catchIf(ServerSecretStore.isSecretStoreError, internalError("issue-credential")),
-    Effect.catchTag("PlatformError", internalError("issue-credential")),
+    Effect.catchTags({ PlatformError: internalError("issue-credential") }),
   );
 
   return CloudLink.of({
